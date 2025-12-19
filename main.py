@@ -1,92 +1,123 @@
-TOTAL_MEMORY_KB = 20
-PAGE_SIZE_KB = 1
-TOTAL_PAGES = TOTAL_MEMORY_KB // PAGE_SIZE_KB
 
-
+TOTAL_MEMORY = 20 
+MAX = 38
 class Job:
     def __init__(self, job_id, start, size, duration, end_state):
         self.id = job_id
         self.start = start
-        self.size = size                 
+        self.size = size
+        self.duration = duration
         self.remaining = duration
         self.end_state = end_state
-        self.pages = []                  
+        self.start_addr = None
 
 
 class MemoryManager:
     def __init__(self):
-        self.memory = [None] * TOTAL_PAGES
+        self.memory = [(0, TOTAL_MEMORY, None)]
 
-    def free_pages(self):
-        free_pages = []
-        for index in range(len(self.memory)):
-            if self.memory[index] is None:
-                free_pages.append(index)
-
-        return free_pages
+    def free_blocks(self):
+        blocks = []
+        for block in self.memory:
+            if block[2] is None:
+                blocks.append(block)
+        return blocks
 
     def allocate(self, job, strategy):
-        free = self.free_pages()
-
-        if len(free) < job.size:
-            return False
-
-        if strategy == "first":
-            chosen = free[:job.size]
-
-        elif strategy == "best":
-            # free array is already sorted
-            chosen = free[:job.size] 
-
+        free = self.free_blocks()
+        # first-fit uses original order
+        if strategy == "best":
+            free.sort(key=lambda b: b[1])
         elif strategy == "worst":
-            chosen = free[-job.size:]
+            free.sort(key=lambda b: b[1], reverse=True)
+        
+        for start, size, _ in free:
+            if size >= job.size:
+                self.place_block(job, start, size)
+                return True
 
-        for page in chosen:
-            self.memory[page] = job.id
-            job.pages.append(page)
+        return False
 
-        return True
+    def place_block(self, job, start, size):
+        new_mem = []
+
+        for b_start, b_size, owner in self.memory:
+            if b_start == start and owner is None:
+                new_mem.append((start, job.size, job.id))
+                if b_size > job.size:
+                    new_mem.append((start + job.size, b_size - job.size, None))
+            else:
+                new_mem.append((b_start, b_size, owner))
+
+        self.memory = new_mem
+        job.start_addr = start
 
     def deallocate(self, job):
-        for page in job.pages:
-            self.memory[page] = None
-        job.pages.clear()
+        updated = []
 
-    def replace(self, active_jobs):
-        if not active_jobs:
-            return
-        victim = active_jobs.pop(0)
-        print(f"Page replacement: removing Job {victim.id}")
-        self.deallocate(victim)
+        for start, size, owner in self.memory:
+            if owner == job.id:
+                updated.append((start, size, None))
+            else:
+                updated.append((start, size, owner))
+
+        self.memory = self.merge_free(updated)
+
+    def merge_free(self, blocks):
+        blocks.sort()
+        merged = [blocks[0]]
+
+        for block in blocks[1:]:
+            last = merged[-1]
+            if last[2] is None and block[2] is None and last[0] + last[1] == block[0]:
+                merged[-1] = (last[0], last[1] + block[1], None)
+            else:
+                merged.append(block)
+
+        return merged
+
+    def ensure_space(self, job, sleeping, active, strategy):
+        while not self.allocate(job, strategy):
+            if sleeping:
+                victim = sleeping.pop(0)
+                print(f"Replacing sleeping Job {victim.id}")
+                self.deallocate(victim)
+            elif active:
+                victim = active.pop(0)
+                print(f"Replacing active Job {victim.id}")
+                self.deallocate(victim)
+            else:
+                return False
+        return True
 
     def print_memory(self):
-        state = []
-
-        for page in self.memory:
-            if page is None:
-                state.append(".")
-            else:
-                state.append(str(page))
-
-        print("Memory:", " ".join(state))
+        view = []
+        for _, size, owner in self.memory:
+            symbol = "." if owner is None else str(owner)
+            for _ in range(size):
+                view.append(symbol)
+        print("Memory:", " ".join(view))
 
 
 def run_simulation(jobs, strategy):
-    print(f"\n{strategy.upper()} FIT SIMULATION")
-    manager = MemoryManager()
-    time = 0
-    active = []
+    print(f"\n{strategy.upper()} FIT")
 
-    while jobs or active:
+    mem = MemoryManager()
+    time = 0
+
+    active = []
+    sleeping = []
+
+    while time < MAX:
         time += 1
         print(f"\n--- Time {time} ---")
 
         for job in list(jobs):
             if job.start == time:
-                print(f"Job {job.id} arrives (needs {job.size} pages)")
-                if not manager.allocate(job, strategy):
-                    manager.replace(active)
-                    manager.allocate(job, strategy)
+                print(f"Job {job.id} arrives ({job.size} KB)")
+                if not mem.ensure_space(job, sleeping, active, strategy):
+                    print("Allocation failed")
+                    return
                 active.append(job)
                 jobs.remove(job)
 
@@ -95,17 +126,16 @@ def run_simulation(jobs, strategy):
             if job.remaining == 0:
                 if job.end_state == "End":
                     print(f"Job {job.id} ends -> deallocated")
-                    manager.deallocate(job)
+                    mem.deallocate(job)
                 else:
-                    print(f"Job {job.id} sleeps -> remains in memory")
+                    print(f"Job {job.id} sleeps")
+                    sleeping.append(job)
                 active.remove(job)
 
-        manager.print_memory()
-
-    print("\nSimulation completed.\n")
+        mem.print_memory()
 
 
-jobs_set_1 = [
+jobs = [
     Job(1, 1, 2, 7, "End"),
     Job(2, 2, 3, 8, "Sleep"),
     Job(3, 3, 4, 6, "End"),
@@ -113,9 +143,6 @@ jobs_set_1 = [
     Job(5, 5, 2, 9, "Sleep"),
     Job(6, 6, 3, 6, "Sleep"),
     Job(7, 7, 2, 6, "Sleep"),
-]
-
-jobs_set_2 = [
     Job(8, 8, 3, 4, "Sleep"),
     Job(9, 9, 5, 5, "Sleep"),
     Job(10, 10, 2, 8, "Sleep"),
@@ -138,8 +165,8 @@ jobs_set_2 = [
     Job(5, 38, 2, 10, "End"),
 ]
 
+
 import copy
 
 for fit in ["first", "best", "worst"]:
-    all_jobs = copy.deepcopy(jobs_set_1 + jobs_set_2)
-    run_simulation(all_jobs, fit)
+    run_simulation(copy.deepcopy(jobs), fit)
